@@ -3,7 +3,7 @@
   "name": "Zap — click to hide anything",
   "version": "1.0.0",
   "description": "Click any element on a webpage and permanently hide it on that site.",
-  "permissions": ["storage", "scripting", "webNavigation"],
+  "permissions": ["storage", "scripting", "webNavigation", "activeTab"],
   "optional_host_permissions": ["*://*/*"],
   "background": {
     "service_worker": "sw.js"
