@@ -1,0 +1,77 @@
+import type { ZapTabMessage } from "../shared/messages";
+import { sendToBackground } from "../shared/messages";
+import { initShadowSupport } from "./shadow";
+import {
+  getStore,
+  initRulesEngine,
+  liveCountForSelector,
+  liveCountsFor,
+  reportMatchCounts,
+  setStore,
+} from "./rulesEngine";
+import { initSpaSupport } from "./spa";
+import { PickerSession } from "./picker";
+
+// document_start: patch attachShadow before the page can create any roots.
+initShadowSupport();
+initRulesEngine();
+
+let activePicker: PickerSession | null = null;
+let highlightStyleEl: HTMLStyleElement | null = null;
+
+function startPicker(): void {
+  if (activePicker) return;
+  activePicker = new PickerSession(() => {
+    activePicker = null;
+  });
+  activePicker.start();
+}
+
+function setHighlight(selector: string | null): void {
+  if (!highlightStyleEl) {
+    highlightStyleEl = document.createElement("style");
+    document.documentElement.appendChild(highlightStyleEl);
+  }
+  highlightStyleEl.textContent = selector
+    ? `${selector} { outline: 3px solid #4f7cff !important; outline-offset: -2px !important; }`
+    : "";
+}
+
+chrome.runtime.onMessage.addListener((message: ZapTabMessage, _sender, sendResponse) => {
+  switch (message.type) {
+    case "ACTIVATE_PICKER":
+      startPicker();
+      break;
+    case "STORE_UPDATED":
+      setStore(message.store);
+      break;
+    case "HIGHLIGHT_RULE": {
+      const rule = getStore().rules.find((r) => r.id === message.ruleId);
+      setHighlight(rule?.selector ?? null);
+      break;
+    }
+    case "GET_LIVE_COUNTS":
+      sendResponse({ ok: true, counts: liveCountsFor(message.ruleIds) });
+      return true;
+    case "PREVIEW_SELECTOR_COUNT":
+      sendResponse({ ok: true, count: liveCountForSelector(message.selector, message.shadowScoped) });
+      return true;
+    default:
+      break;
+  }
+  sendResponse({ ok: true });
+  return true;
+});
+
+initSpaSupport(() => {
+  window.setTimeout(reportMatchCounts, 1200);
+});
+
+// Bootstrap: fetch the current store. The service worker already applied
+// top-level CSS synchronously on navigation (§6.4); this covers shadow
+// roots and keeps our local cache current for SPA nav and picker previews.
+void sendToBackground({ type: "GET_STORE" }).then((res) => {
+  if (res.ok && res.store) setStore(res.store);
+});
+
+window.setTimeout(reportMatchCounts, 1500);

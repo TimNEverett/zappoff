@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Zap — click to hide anything",
+  "version": "1.0.0",
+  "description": "Click any element on a webpage and permanently hide it on that site.",
+  "permissions": ["storage", "scripting", "webNavigation"],
+  "optional_host_permissions": ["*://*/*"],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Zap"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": false
+    }
+  ],
+  "commands": {
+    "activate-picker": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X",
+        "mac": "Command+Shift+X"
+      },
+      "description": "Zap an element"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
