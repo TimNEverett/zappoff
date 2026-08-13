@@ -24,6 +24,21 @@ async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   return tab;
 }
 
+/**
+ * chrome.permissions.request() only succeeds inside a live user gesture. By
+ * the time a click reaches the service worker over sendMessage (plus its
+ * own await for the store to hydrate), that gesture is gone and the request
+ * is silently rejected with no dialog shown. Requesting here instead, still
+ * synchronously inside the button's own click handler, keeps the gesture
+ * fresh — the service worker only needs to know it already succeeded.
+ */
+async function ensureHostPermission(origin: string): Promise<boolean> {
+  const pattern = `${origin}/*`;
+  const already = await chrome.permissions.contains({ origins: [pattern] });
+  if (already) return true;
+  return chrome.permissions.request({ origins: [pattern] });
+}
+
 async function main(): Promise<void> {
   const root = document.getElementById("app");
   if (!root) return;
@@ -71,6 +86,11 @@ function render(root: HTMLElement, tabId: number, tabUrl: string, store: ZapStor
       {
         className: "primary",
         onclick: async () => {
+          const granted = await ensureHostPermission(origin);
+          if (!granted) {
+            showError(root, "Permission to read and change this site was denied.");
+            return;
+          }
           const res = await sendToBackground({ type: "ACTIVATE_PICKER_FOR_ACTIVE_TAB" });
           if (res.ok) window.close();
           else showError(root, res.error);
