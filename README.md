@@ -5,6 +5,10 @@ MV3 extension implementing the PRD's v1 scope: picker → specificity ladder →
 scoped, persistent `display: none` rules, with shadow DOM, SPA, and no-flash
 handling.
 
+Also includes an **ad overlay** (beta): rather than blocking video ads
+outright, it mutes them and covers the player with a placeholder card until
+the ad ends, then reverts. Currently YouTube only. See "Ad overlay" below.
+
 ## Build & load
 
 ```
@@ -50,6 +54,35 @@ Matches PRD §6.3 directly:
 - `src/shared` — types, the scope-matching logic, `chrome.storage`
   persistence (chunked per-origin, sync with a local-storage quota
   fallback), and the message protocol between all of the above.
+- `src/adOverlay` — the ad-overlay feature (separate from the hide-rules
+  engine above): a `Detector` interface, one Tier 1 (DOM/event-based)
+  implementation for YouTube, and the overlay element itself.
+
+## Ad overlay
+
+A global toggle (options page) plus per-site exceptions (popup or options),
+stored independently of hide-rules. On a supported site:
+
+- A `MutationObserver` watches YouTube's `#movie_player` for the
+  `ad-showing`/`ad-interrupting` classes it exposes directly in the DOM —
+  event-driven, no polling.
+- When an ad starts: the underlying `<video>` is muted and a
+  closed-shadow-DOM placeholder card is positioned over the player
+  (`ResizeObserver` + scroll/resize listeners keep it aligned).
+- When the ad ends: the overlay is removed and the video is unmuted (only if
+  Zap muted it — a manually-muted video stays muted).
+
+**v1 scope, deliberately limited:**
+- YouTube only. The note this was planned from also describes generalizing
+  Tier 1 to other Google IMA-SDK sites via similar DOM markers, and a Tier 2
+  fallback (a small classifier model over DOM/player-state snapshots, not a
+  screenshot+vision-LLM loop) for sites with no usable DOM signal — neither
+  is implemented yet.
+- The overlay content is a single bundled placeholder card, not
+  user-configurable.
+- Not reviewed against YouTube's current ToS enforcement posture or Chrome
+  Web Store policy for "modifies ad behavior" extensions — worth checking
+  before wider distribution.
 
 ## Known v1 limitations
 
@@ -96,3 +129,13 @@ injection path, and undo.
 Not exercised by automation: the real toolbar-icon popup click and the
 native Chrome permission-prompt dialog (both are outside what Playwright can
 drive for MV3 extensions) — these were verified by code review instead.
+
+The ad-overlay YouTube detector was smoke-tested in real Chromium via
+Playwright against a fixture page reproducing `#movie_player`'s DOM shape
+(no chrome.* dependency in that module, so no extension load needed):
+overlay show/hide on `ad-showing` and `ad-interrupting` class changes,
+mute/unmute of the underlying video (restoring only when Zap itself muted
+it), and overlay repositioning via `ResizeObserver` on player resize. Not
+tested against a live ad on youtube.com, since ads aren't reliably
+triggerable on demand — worth a manual pass before relying on this day to
+day.

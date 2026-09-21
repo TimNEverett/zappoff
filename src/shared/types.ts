@@ -42,3 +42,21 @@ export interface LadderRung {
   selector: string;
   matchCount: number;
 }
+
+/**
+ * Settings for the ad-overlay feature: mute+cover video ads in place rather
+ * than blocking them outright. Separate namespace from ZapStore/ZapRule
+ * (which are user-authored, per-element hide rules) since this is a single
+ * global behavior toggle plus per-site opt-out, not a rule list.
+ */
+export interface AdOverlaySettings {
+  version: 1;
+  enabled: boolean;
+  disabledOrigins: string[];
+}
+
+export const EMPTY_AD_OVERLAY_SETTINGS: AdOverlaySettings = {
+  version: 1,
+  enabled: true,
+  disabledOrigins: [],
+};

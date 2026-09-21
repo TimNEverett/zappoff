@@ -1,5 +1,7 @@
 import type { ZapTabMessage } from "../shared/messages";
 import { sendToBackground } from "../shared/messages";
+import { EMPTY_AD_OVERLAY_SETTINGS } from "../shared/types";
+import { initAdOverlay, setAdOverlaySettings } from "../adOverlay";
 import { initShadowSupport } from "./shadow";
 import {
   getStore,
@@ -44,6 +46,9 @@ chrome.runtime.onMessage.addListener((message: ZapTabMessage, _sender, sendRespo
       break;
     case "STORE_UPDATED":
       setStore(message.store);
+      break;
+    case "AD_OVERLAY_SETTINGS_UPDATED":
+      setAdOverlaySettings(message.settings);
       break;
     case "HIGHLIGHT_RULE": {
       const rule = getStore().rules.find((r) => r.id === message.ruleId);
@@ -97,3 +102,24 @@ async function bootstrapStore(): Promise<void> {
 void bootstrapStore();
 
 window.setTimeout(reportMatchCounts, 1500);
+
+// Same ephemeral-service-worker race as bootstrapStore above: retry with
+// backoff rather than leaving the tab on the (enabled-by-default) fallback
+// if the first message beats the service worker waking up.
+async function bootstrapAdOverlaySettings(): Promise<void> {
+  for (const delay of BOOTSTRAP_RETRY_DELAYS_MS) {
+    if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay));
+    try {
+      const res = await sendToBackground({ type: "GET_AD_OVERLAY_SETTINGS" });
+      if (res.ok && res.adOverlaySettings) {
+        initAdOverlay(res.adOverlaySettings);
+        return;
+      }
+    } catch {
+      // Service worker likely still waking up; try again.
+    }
+  }
+  initAdOverlay(EMPTY_AD_OVERLAY_SETTINGS);
+}
+
+void bootstrapAdOverlaySettings();

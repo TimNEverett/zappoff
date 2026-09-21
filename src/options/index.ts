@@ -1,4 +1,4 @@
-import type { ZapRule, ZapStore } from "../shared/types";
+import type { AdOverlaySettings, ZapRule, ZapStore } from "../shared/types";
 import { sendToBackground } from "../shared/messages";
 
 const SCOPE_LABELS: Record<ZapRule["scopeLevel"], string> = {
@@ -21,6 +21,11 @@ function h<K extends keyof HTMLElementTagNameMap>(
 async function loadStore(): Promise<ZapStore | null> {
   const res = await sendToBackground({ type: "GET_STORE" });
   return res.ok && res.store ? res.store : null;
+}
+
+async function loadAdOverlaySettings(): Promise<AdOverlaySettings | null> {
+  const res = await sendToBackground({ type: "GET_AD_OVERLAY_SETTINGS" });
+  return res.ok && res.adOverlaySettings ? res.adOverlaySettings : null;
 }
 
 function groupByOrigin(rules: ZapRule[]): Map<string, ZapRule[]> {
@@ -65,7 +70,7 @@ async function main(): Promise<void> {
 }
 
 async function render(root: HTMLElement): Promise<void> {
-  const store = await loadStore();
+  const [store, adOverlaySettings] = await Promise.all([loadStore(), loadAdOverlaySettings()]);
   root.replaceChildren();
 
   if (!store) {
@@ -113,7 +118,53 @@ async function render(root: HTMLElement): Promise<void> {
     }
   }
 
-  root.append(header, fileInput, status, body);
+  root.append(header, fileInput, status);
+  if (adOverlaySettings) root.append(buildAdOverlaySection(root, adOverlaySettings));
+  root.append(body);
+}
+
+function buildAdOverlaySection(root: HTMLElement, settings: AdOverlaySettings): HTMLElement {
+  const section = h("div", { className: "ad-overlay-section" });
+
+  const enabledRow = h("label", { className: "ad-overlay-toggle" }, [
+    h("input", {
+      type: "checkbox",
+      checked: settings.enabled,
+      onchange: async (e: Event) => {
+        await sendToBackground({ type: "SET_AD_OVERLAY_ENABLED", enabled: (e.target as HTMLInputElement).checked });
+        await render(root);
+      },
+    } as Partial<HTMLInputElement>),
+    h("span", {}, ["Ad overlay (beta) — mute and cover video ads instead of blocking them, currently: YouTube"]),
+  ]);
+
+  section.append(h("h2", {}, ["Ad overlay"]), enabledRow);
+
+  if (settings.disabledOrigins.length > 0) {
+    const list = h("div", { className: "ad-overlay-exceptions" });
+    for (const origin of [...settings.disabledOrigins].sort()) {
+      list.append(
+        h("div", { className: "ad-overlay-exception-row" }, [
+          h("span", {}, [origin.replace(/^https?:\/\//, "")]),
+          h(
+            "button",
+            {
+              className: "icon-btn",
+              title: "Re-enable ad overlay on this site",
+              onclick: async () => {
+                await sendToBackground({ type: "SET_AD_OVERLAY_ORIGIN_DISABLED", origin, disabled: false });
+                await render(root);
+              },
+            },
+            ["✕"],
+          ),
+        ]),
+      );
+    }
+    section.append(h("div", { className: "ad-overlay-exceptions-label" }, ["Disabled on:"]), list);
+  }
+
+  return section;
 }
 
 function buildOriginGroup(root: HTMLElement, origin: string, rules: ZapRule[], disabled: boolean): HTMLElement {

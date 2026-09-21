@@ -1,4 +1,4 @@
-import { EMPTY_STORE, type ZapRule, type ZapStore } from "./types";
+import { EMPTY_AD_OVERLAY_SETTINGS, EMPTY_STORE, type AdOverlaySettings, type ZapRule, type ZapStore } from "./types";
 
 /**
  * Persistence layer. Only the service worker touches this module — it owns
@@ -110,4 +110,20 @@ export async function saveDisabledOrigins(disabledOrigins: string[]): Promise<vo
   const index = await readIndex();
   index.disabledOrigins = disabledOrigins;
   await writeIndex(index);
+}
+
+/**
+ * The ad-overlay feature's settings: small and flat, so unlike hide-rules it
+ * lives under a single chrome.storage.sync key rather than being chunked
+ * per-origin.
+ */
+const AD_OVERLAY_KEY = "zap:adOverlay";
+
+export async function loadAdOverlaySettings(): Promise<AdOverlaySettings> {
+  const got = await chrome.storage.sync.get(AD_OVERLAY_KEY);
+  return (got[AD_OVERLAY_KEY] as AdOverlaySettings | undefined) ?? EMPTY_AD_OVERLAY_SETTINGS;
+}
+
+export async function saveAdOverlaySettings(settings: AdOverlaySettings): Promise<void> {
+  await chrome.storage.sync.set({ [AD_OVERLAY_KEY]: settings });
 }

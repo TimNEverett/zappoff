@@ -1,6 +1,12 @@
-import type { ZapRule, ZapStore } from "../shared/types";
+import type { AdOverlaySettings, ZapRule, ZapStore } from "../shared/types";
 import { matchesScope, originOf, computeScope } from "../shared/scope";
-import { loadStore, saveDisabledOrigins, saveOrigin } from "../shared/storage";
+import {
+  loadAdOverlaySettings,
+  loadStore,
+  saveAdOverlaySettings,
+  saveDisabledOrigins,
+  saveOrigin,
+} from "../shared/storage";
 import type { ZapRequest, ZapResponse, ZapTabMessage } from "../shared/messages";
 import { ruleCSS } from "../shared/css";
 
@@ -17,10 +23,11 @@ import { ruleCSS } from "../shared/css";
  */
 
 let store: ZapStore = { version: 1, rules: [], disabledOrigins: [] };
+let adOverlaySettings: AdOverlaySettings = { version: 1, enabled: true, disabledOrigins: [] };
 let storeReady: Promise<void> = hydrate();
 
 async function hydrate(): Promise<void> {
-  store = await loadStore();
+  [store, adOverlaySettings] = await Promise.all([loadStore(), loadAdOverlaySettings()]);
 }
 
 function genId(): string {
@@ -66,6 +73,16 @@ async function persistOrigin(origin: string): Promise<void> {
 async function broadcastStore(): Promise<void> {
   const tabs = await chrome.tabs.query({});
   const msg: ZapTabMessage = { type: "STORE_UPDATED", store };
+  await Promise.all(
+    tabs
+      .filter((tab): tab is chrome.tabs.Tab & { id: number } => tab.id != null)
+      .map((tab) => chrome.tabs.sendMessage(tab.id, msg).catch(() => undefined)),
+  );
+}
+
+async function broadcastAdOverlaySettings(): Promise<void> {
+  const tabs = await chrome.tabs.query({});
+  const msg: ZapTabMessage = { type: "AD_OVERLAY_SETTINGS_UPDATED", settings: adOverlaySettings };
   await Promise.all(
     tabs
       .filter((tab): tab is chrome.tabs.Tab & { id: number } => tab.id != null)
@@ -149,6 +166,26 @@ async function handleMessage(message: ZapRequest): Promise<ZapResponse> {
   switch (message.type) {
     case "GET_STORE":
       return { ok: true, store };
+
+    case "GET_AD_OVERLAY_SETTINGS":
+      return { ok: true, adOverlaySettings };
+
+    case "SET_AD_OVERLAY_ENABLED": {
+      adOverlaySettings.enabled = message.enabled;
+      await saveAdOverlaySettings(adOverlaySettings);
+      await broadcastAdOverlaySettings();
+      return { ok: true, adOverlaySettings };
+    }
+
+    case "SET_AD_OVERLAY_ORIGIN_DISABLED": {
+      const set = new Set(adOverlaySettings.disabledOrigins);
+      if (message.disabled) set.add(message.origin);
+      else set.delete(message.origin);
+      adOverlaySettings.disabledOrigins = Array.from(set);
+      await saveAdOverlaySettings(adOverlaySettings);
+      await broadcastAdOverlaySettings();
+      return { ok: true, adOverlaySettings };
+    }
 
     case "REQUEST_HOST_PERMISSION": {
       const granted = await ensureHostPermission(message.origin);

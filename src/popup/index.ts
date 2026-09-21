@@ -1,6 +1,7 @@
-import type { ScopeLevel, ZapRule, ZapStore } from "../shared/types";
+import type { AdOverlaySettings, ScopeLevel, ZapRule, ZapStore } from "../shared/types";
 import { sendToBackground, sendToTab } from "../shared/messages";
 import { computeScope, matchesScope, originOf } from "../shared/scope";
+import { isAdOverlaySupportedOrigin } from "../shared/adOverlaySites";
 
 const SCOPE_LABELS: Record<ScopeLevel, string> = {
   page: "This page",
@@ -61,16 +62,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const storeRes = await sendToBackground({ type: "GET_STORE" });
+  const [storeRes, adOverlayRes] = await Promise.all([
+    sendToBackground({ type: "GET_STORE" }),
+    sendToBackground({ type: "GET_AD_OVERLAY_SETTINGS" }),
+  ]);
   if (!storeRes.ok || !storeRes.store) {
     root.append(h("div", { className: "empty" }, ["Couldn't load rules."]));
     return;
   }
 
-  render(root, tab.id!, tab.url, storeRes.store);
+  render(root, tab.id!, tab.url, storeRes.store, adOverlayRes.ok ? adOverlayRes.adOverlaySettings : undefined);
 }
 
-function render(root: HTMLElement, tabId: number, tabUrl: string, store: ZapStore): void {
+function render(
+  root: HTMLElement,
+  tabId: number,
+  tabUrl: string,
+  store: ZapStore,
+  adOverlaySettings?: AdOverlaySettings,
+): void {
   root.replaceChildren();
   const origin = originOf(tabUrl);
 
@@ -113,6 +123,22 @@ function render(root: HTMLElement, tabId: number, tabUrl: string, store: ZapStor
     h("span", {}, [`Disable Zap on ${origin.replace(/^https?:\/\//, "")}`]),
   ]);
 
+  const adOverlayRow =
+    adOverlaySettings && isAdOverlaySupportedOrigin(origin)
+      ? h("label", { className: "row disable-row" }, [
+          h("input", {
+            type: "checkbox",
+            checked: adOverlaySettings.disabledOrigins.includes(origin),
+            onchange: async (e: Event) => {
+              const disabled = (e.target as HTMLInputElement).checked;
+              await sendToBackground({ type: "SET_AD_OVERLAY_ORIGIN_DISABLED", origin, disabled });
+              await refresh(root, tabId, tabUrl);
+            },
+          } as Partial<HTMLInputElement>),
+          h("span", {}, [`Disable ad overlay on ${origin.replace(/^https?:\/\//, "")}`]),
+        ])
+      : null;
+
   const list = h("div", { className: "list" });
   if (matchingRules.length === 0) {
     list.append(h("div", { className: "empty" }, ["No rules on this page yet."]));
@@ -143,7 +169,9 @@ function render(root: HTMLElement, tabId: number, tabUrl: string, store: ZapStor
 
   const footer = h("div", { className: "footer" }, [undoBtn, optionsLink]);
 
-  root.append(header, disableRow, list, footer);
+  root.append(header, disableRow);
+  if (adOverlayRow) root.append(adOverlayRow);
+  root.append(list, footer);
 }
 
 function buildRuleRow(root: HTMLElement, tabId: number, tabUrl: string, rule: ZapRule): HTMLElement {
@@ -269,8 +297,13 @@ function showError(root: HTMLElement, message: string): void {
 }
 
 async function refresh(root: HTMLElement, tabId: number, tabUrl: string): Promise<void> {
-  const storeRes = await sendToBackground({ type: "GET_STORE" });
-  if (storeRes.ok && storeRes.store) render(root, tabId, tabUrl, storeRes.store);
+  const [storeRes, adOverlayRes] = await Promise.all([
+    sendToBackground({ type: "GET_STORE" }),
+    sendToBackground({ type: "GET_AD_OVERLAY_SETTINGS" }),
+  ]);
+  if (storeRes.ok && storeRes.store) {
+    render(root, tabId, tabUrl, storeRes.store, adOverlayRes.ok ? adOverlayRes.adOverlaySettings : undefined);
+  }
 }
 
 void main();
