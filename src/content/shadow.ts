@@ -8,8 +8,14 @@
  * We discover roots two ways: walking the existing tree at init, and a
  * patched `Element.prototype.attachShadow` installed at document_start so
  * every root created afterwards (including ones nested arbitrarily deep, or
- * created later by client-side routing / infinite scroll) is caught too —
- * no MutationObserver needed.
+ * created later by client-side routing / infinite scroll) is caught too.
+ *
+ * Discovering a root early is not the same as being able to *match* it:
+ * `attachShadow` is usually called from a custom element's constructor,
+ * before the host has its classes and attributes, so a shadow-scoped rule
+ * evaluated at that instant can't tell whether the host matches. That's why
+ * rulesEngine re-evaluates roots on a settle tick rather than once at
+ * registration.
  *
  * Closed shadow roots are out of scope (PRD D3) and are invisible to us.
  */
@@ -22,19 +28,44 @@ const knownRoots = new Set<ShadowRoot>();
 const newRootListeners: Array<(root: ShadowRoot) => void> = [];
 let patched = false;
 
+/**
+ * Pages own `adoptedStyleSheets` too, and frameworks that manage it
+ * (Lit, Stencil, and anything doing `root.adoptedStyleSheets = [...]`)
+ * replace the whole array rather than appending to it — which silently
+ * evicts our sheet and un-hides everything on that root. So we re-assert
+ * membership on every write instead of only on first creation, and append
+ * at the end so a page sheet of equal specificity can't win on order.
+ */
 function ensureSheet(map: WeakMap<StyleRoot, CSSStyleSheet>, root: StyleRoot): CSSStyleSheet {
   let sheet = map.get(root);
   if (!sheet) {
     sheet = new CSSStyleSheet();
     map.set(root, sheet);
-    root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+  }
+  try {
+    const adopted = root.adoptedStyleSheets;
+    if (!adopted.includes(sheet)) {
+      root.adoptedStyleSheets = [...adopted, sheet];
+    }
+  } catch {
+    // Detached root, or a page that has made adoptedStyleSheets unwritable.
   }
   return sheet;
 }
 
+/**
+ * The last CSS text we wrote to each sheet. `reapply()` runs on a DOM-mutation
+ * tick now, so the overwhelmingly common case is "nothing changed" — skipping
+ * the `replaceSync` keeps that path from re-parsing CSS dozens of times a
+ * second on a busy page.
+ */
+const lastCSSText = new WeakMap<CSSStyleSheet, string>();
+
 function safeReplace(sheet: CSSStyleSheet, cssText: string): void {
+  if (lastCSSText.get(sheet) === cssText) return;
   try {
     sheet.replaceSync(cssText);
+    lastCSSText.set(sheet, cssText);
   } catch {
     // A malformed selector in one rule shouldn't take down every other rule.
   }

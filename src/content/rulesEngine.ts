@@ -22,28 +22,89 @@ function applyToDocument(rules: ZapRule[]): void {
   setRulesCSSForRoot(document, css);
 }
 
+function hostMatches(root: ShadowRoot, rule: ZapRule): boolean {
+  const path = rule.shadowPath;
+  if (path === null || path.length === 0) return false;
+  try {
+    return root.host.matches(path[path.length - 1]);
+  } catch {
+    // Detached host, or a stored selector the parser rejects. Either way this
+    // rule doesn't apply here — and it must not take the whole pass down.
+    return false;
+  }
+}
+
 function applyToShadowRoot(root: ShadowRoot, rules: ZapRule[]): void {
-  const hostSelector = safeHostSelector(root);
   const css = rules
-    .filter((r) => r.shadowPath !== null && r.shadowPath.length > 0 && hostSelector && root.host.matches(r.shadowPath[r.shadowPath.length - 1]))
+    .filter((r) => hostMatches(root, r))
     .map(ruleCSS)
     .join("\n");
   setRulesCSSForRoot(root, css);
-}
-
-function safeHostSelector(root: ShadowRoot): boolean {
-  try {
-    return typeof root.host.matches === "function";
-  } catch {
-    return false;
-  }
 }
 
 /** Re-applies all currently-matching rules to the document and every known shadow root. */
 export function reapply(): void {
   const rules = currentMatchingRules();
   applyToDocument(rules);
+
+  // Walking every known shadow root costs real time on component-heavy sites,
+  // and it's pure waste unless some rule is actually shadow-scoped.
+  if (!rules.some((r) => r.shadowPath !== null)) return;
   for (const root of getKnownShadowRoots()) applyToShadowRoot(root, rules);
+}
+
+/**
+ * Zapped elements were coming back mid-session, and only a disable/re-enable
+ * (which broadcasts STORE_UPDATED -> setStore -> reapply) brought them back.
+ * That's the tell: the CSS itself is fine, but the page can get out from under
+ * it in ways a one-shot apply never notices —
+ *
+ *   1. a framework replacing `adoptedStyleSheets` wholesale, evicting our sheet
+ *      (see shadow.ts);
+ *   2. a shadow host that only gains the class/attribute our rule matches on
+ *      *after* `attachShadow` ran, so the apply at registration time saw nothing.
+ *
+ * Re-running on a DOM-mutation tick covers both without having to enumerate the
+ * ways a page can misbehave. Note that this is a *repair* pass, not the hiding
+ * mechanism: `display: none !important` already applies to nodes added later
+ * all by itself, so there's no need to run per mutation — we coalesce
+ * aggressively and bail early when nothing changed.
+ */
+const REAPPLY_MIN_INTERVAL_MS = 100;
+let observer: MutationObserver | null = null;
+let reapplyScheduled = false;
+let lastReapplyAt = 0;
+
+export function scheduleReapply(): void {
+  if (reapplyScheduled) return;
+  reapplyScheduled = true;
+  const wait = Math.max(0, REAPPLY_MIN_INTERVAL_MS - (Date.now() - lastReapplyAt));
+  window.setTimeout(() => {
+    reapplyScheduled = false;
+    lastReapplyAt = Date.now();
+    reapply();
+  }, wait);
+}
+
+function observe(): void {
+  const target = document.documentElement;
+  if (!target || !observer) return;
+  observer.observe(target, {
+    childList: true,
+    subtree: true,
+    // Rules and shadow-host paths are selector-based, so a host picking up its
+    // class late is as much a change as a node being inserted.
+    attributes: true,
+    attributeFilter: ["class", "id"],
+  });
+}
+
+/** Starts the mutation-driven repair pass. Safe to call at document_start. */
+export function initAutoReapply(): void {
+  if (observer) return;
+  observer = new MutationObserver(scheduleReapply);
+  if (document.documentElement) observe();
+  else document.addEventListener("DOMContentLoaded", observe, { once: true });
 }
 
 export function setStore(next: ZapStore): void {

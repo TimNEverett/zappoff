@@ -78,6 +78,7 @@ async function broadcastStore(): Promise<void> {
       .filter((tab): tab is chrome.tabs.Tab & { id: number } => tab.id != null)
       .map((tab) => chrome.tabs.sendMessage(tab.id, msg).catch(() => undefined)),
   );
+  await resyncAllFrames();
 }
 
 async function broadcastAdOverlaySettings(): Promise<void> {
@@ -132,24 +133,111 @@ async function activatePickerForTab(tabId: number, url: string): Promise<ZapResp
   }
 }
 
+/**
+ * CSS we've injected into each live frame, keyed "<tabId>:<frameId>".
+ *
+ * insertCSS has no notion of "replace what you injected last time": every
+ * call adds another stylesheet that lives until the document is torn down or
+ * we hand the exact same text back to removeCSS. A real navigation discards
+ * them for us, but a client-side route change does not — so without this
+ * bookkeeping, SPA navigation stacked a fresh sheet per route *and* kept
+ * hiding whatever the previous route's page-scoped rules targeted.
+ *
+ * The map is lost when the MV3 service worker is evicted. The cost of that is
+ * one stale sheet surviving until the next real navigation, which is where
+ * this already stood; it isn't worth a storage write on every navigation.
+ */
+interface InjectedFrame {
+  url: string;
+  css: string;
+}
+
+const injectedCSS = new Map<string, InjectedFrame>();
+
+function frameKey(tabId: number, frameId: number): string {
+  return `${tabId}:${frameId}`;
+}
+
+async function syncFrameCSS(
+  tabId: number,
+  frameId: number,
+  url: string,
+  sameDocument: boolean,
+): Promise<void> {
+  await storeReady;
+  const key = frameKey(tabId, frameId);
+  const previous = injectedCSS.get(key);
+  const rules = matchingRulesFor(url).filter((r) => r.shadowPath === null);
+  const css = rules.map(ruleCSS).join("\n");
+
+  // A fresh document dropped whatever we injected into the old one, so there
+  // is nothing to retract and the "already correct" shortcut doesn't hold.
+  if (sameDocument && previous && previous.css === css) {
+    injectedCSS.set(key, { url, css });
+    return;
+  }
+
+  if (sameDocument && previous && previous.css.length > 0) {
+    try {
+      await chrome.scripting.removeCSS({
+        target: { tabId, frameIds: [frameId] },
+        css: previous.css,
+      });
+    } catch {
+      // Frame is gone, or the sheet was already dropped. Either is fine.
+    }
+  }
+
+  // Tracked even when empty: the frame still needs re-syncing if the user
+  // later adds a rule that covers it.
+  injectedCSS.set(key, { url, css: "" });
+  if (css.length === 0) return;
+
+  try {
+    await chrome.scripting.insertCSS({ target: { tabId, frameIds: [frameId] }, css });
+    injectedCSS.set(key, { url, css });
+  } catch {
+    // No host permission for this frame's origin, or the frame is already gone.
+  }
+}
+
+/**
+ * Re-derives the injected CSS for every frame we've injected into. Editing or
+ * deleting a rule otherwise left this injection in place until the next real
+ * navigation — so a deleted zap kept hiding its element even though the
+ * content script had already dropped it from its own sheet.
+ */
+async function resyncAllFrames(): Promise<void> {
+  await Promise.all(
+    Array.from(injectedCSS.entries()).map(([key, frame]) => {
+      const [tabId, frameId] = key.split(":").map(Number);
+      if (!Number.isInteger(tabId) || !Number.isInteger(frameId)) return undefined;
+      return syncFrameCSS(tabId, frameId, frame.url, true);
+    }),
+  );
+}
+
 // R4.3/§6.4: apply light-DOM rules synchronously on navigation commit, before
 // first paint. Shadow-scoped rules (shadowPath !== null) are handled by the
 // content script instead, since insertCSS can't cross shadow boundaries.
 chrome.webNavigation.onCommitted.addListener((details) => {
-  void (async () => {
-    await storeReady;
-    const rules = matchingRulesFor(details.url).filter((r) => r.shadowPath === null);
-    if (rules.length === 0) return;
-    const css = rules.map(ruleCSS).join("\n");
-    try {
-      await chrome.scripting.insertCSS({
-        target: { tabId: details.tabId, frameIds: [details.frameId] },
-        css,
-      });
-    } catch {
-      // No host permission for this frame's origin, or the frame is already gone.
-    }
-  })();
+  void syncFrameCSS(details.tabId, details.frameId, details.url, false);
+});
+
+// pushState/replaceState keeps the document — and therefore our injected CSS —
+// alive across what the user experiences as a page change, so the injection
+// has to be re-derived for the new URL rather than left as-is. The content
+// script re-applies its own sheet on the same event (spa.ts); this keeps the
+// service worker's pre-paint injection from contradicting it.
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  void syncFrameCSS(details.tabId, details.frameId, details.url, true);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const prefix = `${tabId}:`;
+  for (const key of Array.from(injectedCSS.keys())) {
+    if (key.startsWith(prefix)) injectedCSS.delete(key);
+  }
 });
 
 chrome.commands.onCommand.addListener((command) => {
