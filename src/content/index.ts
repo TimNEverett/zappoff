@@ -5,9 +5,11 @@ import { initAdOverlay, setAdOverlaySettings } from "../adOverlay";
 import { initShadowSupport } from "./shadow";
 import {
   getStore,
+  initAutoReapply,
   initRulesEngine,
   liveCountForSelector,
   liveCountsFor,
+  reapply,
   reportMatchCounts,
   setStore,
 } from "./rulesEngine";
@@ -17,6 +19,7 @@ import { PickerSession } from "./picker";
 // document_start: patch attachShadow before the page can create any roots.
 initShadowSupport();
 initRulesEngine();
+initAutoReapply();
 
 let activePicker: PickerSession | null = null;
 let highlightStyleEl: HTMLStyleElement | null = null;
@@ -69,6 +72,16 @@ chrome.runtime.onMessage.addListener((message: ZapTabMessage, _sender, sendRespo
 });
 
 initSpaSupport(() => {
+  // Which rules apply is a function of location.href, so a client-side route
+  // change invalidates the whole set — this used to only re-count matches,
+  // which left the previous page's CSS in place and nothing applied for the
+  // new one until some unrelated STORE_UPDATED happened to come through.
+  reapply();
+  // Routers swap the actual content a tick or two after the URL changes, and
+  // a route change can create shadow hosts that only become matchable once
+  // they've rendered. The mutation observer catches most of that; this is a
+  // cheap backstop for a route that settles without mutating documentElement.
+  window.setTimeout(reapply, 500);
   window.setTimeout(reportMatchCounts, 1200);
 });
 
