@@ -66,11 +66,21 @@ stored independently of hide-rules. On a supported site:
 - A `MutationObserver` watches YouTube's `#movie_player` for the
   `ad-showing`/`ad-interrupting` classes it exposes directly in the DOM —
   event-driven, no polling.
-- When an ad starts: the underlying `<video>` is muted and a
-  closed-shadow-DOM placeholder card is positioned over the player
-  (`ResizeObserver` + scroll/resize listeners keep it aligned).
-- When the ad ends: the overlay is removed and the video is unmuted (only if
-  Zap muted it — a manually-muted video stays muted).
+- When an ad starts: every `<video>` found under the player (searched
+  shadow-piercing, since the actual playing element can live inside an open
+  shadow root, or mount slightly after the class flips) gets muted, and the
+  one judged to be the actual on-screen video is hidden with
+  `visibility: hidden` and replaced in place with a closed-shadow-DOM
+  placeholder card — sized to just the video via CSS `inset: 0`, not the
+  whole player, and inserted as its DOM sibling rather than a document-level
+  overlay. That keeps it in the player's own stacking context, below
+  YouTube's own controls (skip button, progress bar, ad countdown), which
+  stay visible and clickable. While the ad continues, this re-runs on a
+  500ms interval rather than a single snapshot, to catch a video element
+  that mounts or gets swapped out mid-ad.
+- When the ad ends: the overlay is removed, the video is unhidden, and every
+  video Zap itself muted is unmuted (a video the user manually muted stays
+  muted).
 
 **v1 scope, deliberately limited:**
 - YouTube only. The note this was planned from also describes generalizing
@@ -131,11 +141,14 @@ native Chrome permission-prompt dialog (both are outside what Playwright can
 drive for MV3 extensions) — these were verified by code review instead.
 
 The ad-overlay YouTube detector was smoke-tested in real Chromium via
-Playwright against a fixture page reproducing `#movie_player`'s DOM shape
-(no chrome.* dependency in that module, so no extension load needed):
-overlay show/hide on `ad-showing` and `ad-interrupting` class changes,
-mute/unmute of the underlying video (restoring only when Zap itself muted
-it), and overlay repositioning via `ResizeObserver` on player resize. Not
-tested against a live ad on youtube.com, since ads aren't reliably
-triggerable on demand — worth a manual pass before relying on this day to
-day.
+Playwright against a fixture page reproducing `#movie_player`'s DOM shape,
+including a positioned control layer and a video mounted mid-ad inside an
+open shadow root (no chrome.* dependency in that module, so no extension
+load needed): overlay show/hide on `ad-showing`/`ad-interrupting` class
+changes; mute/unmute of every matched video, shadow-piercing search
+included, restoring only what Zap itself muted; the video-only cover
+leaving sibling "controls" hit-testable (not covered) throughout; and the
+500ms reassert loop both catching a video that mounts mid-ad and stopping
+cleanly once the ad ends. Not tested against a live ad on youtube.com,
+since ads aren't reliably triggerable on demand — worth a manual pass
+before relying on this day to day.

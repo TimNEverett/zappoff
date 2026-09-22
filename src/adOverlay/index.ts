@@ -2,6 +2,7 @@ import { EMPTY_AD_OVERLAY_SETTINGS, type AdOverlaySettings } from "../shared/typ
 import { originOf } from "../shared/scope";
 import { isAdOverlaySupportedOrigin } from "../shared/adOverlaySites";
 import type { AdDetector } from "./detector";
+import { findVideosDeep, pickPrimaryVideo } from "./domUtil";
 import { AdOverlay } from "./overlay";
 import { YoutubeAdDetector } from "./youtube";
 
@@ -12,9 +13,15 @@ import { YoutubeAdDetector } from "./youtube";
  * current frame and reacts to settings changes without a page reload.
  */
 
+// While an ad is showing, re-find and re-mute on this cadence rather than
+// trusting a single snapshot taken the instant the ad-state class flips —
+// the ad's <video> can mount slightly later, or get swapped out mid-ad.
+const MUTE_REASSERT_INTERVAL_MS = 500;
+
 let settings: AdOverlaySettings = EMPTY_AD_OVERLAY_SETTINGS;
 let detector: AdDetector | null = null;
-let mutedByUs = false;
+let mutedVideos = new Set<HTMLVideoElement>();
+let muteInterval: number | null = null;
 const overlay = new AdOverlay();
 
 function detectorFor(origin: string): (() => AdDetector) | null {
@@ -24,18 +31,31 @@ function detectorFor(origin: string): (() => AdDetector) | null {
   return null;
 }
 
-function onAdStateChange(isAd: boolean, player: HTMLElement): void {
-  const video = player.querySelector("video");
-  if (isAd) {
-    overlay.show(player);
-    if (video && !video.muted) {
+function muteAndOverlay(player: HTMLElement): void {
+  const videos = findVideosDeep(player);
+  for (const video of videos) {
+    if (!video.muted) {
       video.muted = true;
-      mutedByUs = true;
+      mutedVideos.add(video);
     }
+  }
+  const primary = pickPrimaryVideo(videos);
+  if (primary) overlay.show(primary);
+}
+
+function onAdStateChange(isAd: boolean, player: HTMLElement): void {
+  if (muteInterval != null) {
+    window.clearInterval(muteInterval);
+    muteInterval = null;
+  }
+
+  if (isAd) {
+    muteAndOverlay(player);
+    muteInterval = window.setInterval(() => muteAndOverlay(player), MUTE_REASSERT_INTERVAL_MS);
   } else {
     overlay.hide();
-    if (video && mutedByUs) video.muted = false;
-    mutedByUs = false;
+    for (const video of mutedVideos) video.muted = false;
+    mutedVideos.clear();
   }
 }
 
@@ -64,8 +84,13 @@ function startIfEligible(): void {
 function stopDetector(): void {
   detector?.stop();
   detector = null;
+  if (muteInterval != null) {
+    window.clearInterval(muteInterval);
+    muteInterval = null;
+  }
   overlay.hide();
-  mutedByUs = false;
+  for (const video of mutedVideos) video.muted = false;
+  mutedVideos.clear();
 }
 
 export function initAdOverlay(initialSettings: AdOverlaySettings): void {

@@ -5,6 +5,16 @@
  *
  * Rendered inside a closed shadow root so the host page's CSS can't leak in
  * (and so a host page can't style-probe the overlay's contents out).
+ *
+ * The card is inserted as a DOM sibling of the `<video>` element itself —
+ * sized to fill its parent via `inset: 0` rather than a JS-measured,
+ * viewport-fixed rect — instead of a document-level overlay above the whole
+ * player. That keeps it in the *same* local stacking context as the
+ * player's own controls (skip button, progress bar, ad countdown), which
+ * have an explicitly higher z-index and so stay visible and clickable. The
+ * video itself is hidden with `visibility: hidden` rather than covered —
+ * audio is unaffected by that (muting is handled separately), and it means
+ * the card never has to out-rank the video for stacking order either.
  */
 
 const CARD_CSS = `
@@ -33,58 +43,60 @@ const CARD_CSS = `
 `;
 
 export class AdOverlay {
-  private host: HTMLDivElement | null = null;
-  private target: HTMLElement | null = null;
-  private resizeObserver: ResizeObserver | null = null;
-  private readonly onWindowChange = (): void => this.reposition();
+  private card: HTMLDivElement | null = null;
+  private video: HTMLVideoElement | null = null;
+  private restorePosition: string | null = null;
 
-  show(target: HTMLElement): void {
-    this.target = target;
-    if (!this.host) this.host = this.build();
-    if (!this.host.isConnected) document.documentElement.appendChild(this.host);
+  show(video: HTMLVideoElement): void {
+    if (this.video && this.video !== video) this.restoreVideo();
+    this.video = video;
+    video.style.visibility = "hidden";
 
-    if (!this.resizeObserver) {
-      this.resizeObserver = new ResizeObserver(() => this.reposition());
+    const container = video.parentElement ?? video;
+    // `inset: 0` on the card only lines up with the video if `container` is
+    // a positioned element — which it almost always already is, since the
+    // video itself is normally absolutely positioned to fill it. Force it
+    // as a fallback rather than assuming.
+    if (getComputedStyle(container).position === "static") {
+      this.restorePosition = container.style.position || "";
+      container.style.position = "relative";
     }
-    this.resizeObserver.observe(target);
-    window.addEventListener("resize", this.onWindowChange);
-    window.addEventListener("scroll", this.onWindowChange, true);
-    this.reposition();
+
+    if (!this.card) this.card = this.build();
+    if (this.card.parentElement !== container) container.appendChild(this.card);
   }
 
   hide(): void {
-    this.host?.remove();
-    if (this.target) this.resizeObserver?.unobserve(this.target);
-    window.removeEventListener("resize", this.onWindowChange);
-    window.removeEventListener("scroll", this.onWindowChange, true);
-    this.target = null;
+    this.card?.remove();
+    this.restoreVideo();
   }
 
-  private reposition(): void {
-    if (!this.host || !this.target) return;
-    const rect = this.target.getBoundingClientRect();
-    Object.assign(this.host.style, {
-      left: `${rect.left}px`,
-      top: `${rect.top}px`,
-      width: `${rect.width}px`,
-      height: `${rect.height}px`,
-    });
+  private restoreVideo(): void {
+    const video = this.video;
+    if (!video) return;
+    video.style.visibility = "";
+    if (this.restorePosition !== null) {
+      const container = video.parentElement;
+      if (container) container.style.position = this.restorePosition;
+      this.restorePosition = null;
+    }
+    this.video = null;
   }
 
   private build(): HTMLDivElement {
-    const host = document.createElement("div");
-    host.style.position = "fixed";
-    host.style.zIndex = "2147483647";
-    host.style.pointerEvents = "none";
+    const card = document.createElement("div");
+    card.style.position = "absolute";
+    card.style.inset = "0";
+    card.style.pointerEvents = "none";
 
-    const shadow = host.attachShadow({ mode: "closed" });
+    const shadow = card.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent = CARD_CSS;
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `<div class="bolt">⚡</div><div class="label">Ad zapped</div>`;
-    shadow.append(style, card);
+    const inner = document.createElement("div");
+    inner.className = "card";
+    inner.innerHTML = `<div class="bolt">⚡</div><div class="label">Ad zapped</div>`;
+    shadow.append(style, inner);
 
-    return host;
+    return card;
   }
 }
